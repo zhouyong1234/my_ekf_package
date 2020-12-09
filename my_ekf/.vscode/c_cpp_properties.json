@@ -1,0 +1,34 @@
+{
+    "configurations": [
+        {
+            "browse": {
+                "databaseFilename": "",
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "includePath": [
+                "/home/zy/catkin_workspace/devel/include/**",
+                "/home/zy/robot_ws/devel/include/**",
+                "/opt/ros/melodic/include/**",
+                "/home/zy/catkin_workspace/src/A-LOAM-devel/include/**",
+                "/home/zy/robot_ws/src/app/amcl/include/**",
+                "/home/zy/robot_ws/src/driver/orbbec_depth_camera/ros_astra_camera-filterlibrary/include/**",
+                "/home/zy/robot_ws/src/app/auto_docking/include/**",
+                "/home/zy/robot_ws/src/driver/dock_driver/include/**",
+                "/home/zy/robot_ws/src/driver/base_driver/base_node/include/**",
+                "/home/zy/robot_ws/src/deps/costmap_prohibition_layer/include/**",
+                "/home/zy/robot_ws/src/app/mapping/include/**",
+                "/home/zy/robot_ws/src/app/move_base/include/**",
+                "/home/zy/catkin_workspace/src/my_lidar_localization/include/**",
+                "/home/zy/robot_ws/src/app/pose_base_controller/include/**",
+                "/home/zy/robot_ws/src/app/rotate_recovery/include/**",
+                "/usr/include/**"
+            ],
+            "name": "ROS",
+            "intelliSenseMode": "gcc-x64",
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++14"
+        }
+    ],
+    "version": 4
+}
