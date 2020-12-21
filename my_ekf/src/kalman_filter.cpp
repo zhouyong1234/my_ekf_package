@@ -5,79 +5,106 @@ namespace my_ekf_package
 {
 KalmanFilter::KalmanFilter()
 {
+    ros::Time::init();
     is_initialized_ = false;
+    previous_time_imu_ = ros::Time::now().toSec();
+    x_ << 0, 0, 0, 0, 0, 0, 0, 0, 0, 1;
+    gravity_ = Eigen::Vector3d(0, 0, 9.8);
+    P_ = Eigen::Matrix<double, 9, 9>::Identity() * 100;
 }
 
-KalmanFilter::~KalmanFilter()
-{
+KalmanFilter::~KalmanFilter() {}
 
-}
-
-void KalmanFilter::Initialization(Eigen::Vector4d x_in)
+void KalmanFilter::Initialization(Eigen::VectorXd x_in)
 {
     x_ = x_in;
 
-    std::cout << "x_: " << x_(0) << " " << x_(1) << " " << x_(2) << " " << " " << x_(3) << std::endl;
-}
-
-void KalmanFilter::Initialize(const tf::Transform& transform, const ros::Time& time)
-{
+    // std::cout << "x_: " << std::endl << x_ << std::endl;
 
 }
+
 
 bool KalmanFilter::IsInitialized()
 {
     return is_initialized_;
 }
 
-void KalmanFilter::SetF(Eigen::MatrixXd F_in)
-{
-    F_ = F_in;
-    // std::cout << "F_: " << std::endl << F_ << std::endl;
-}
 
-void KalmanFilter::SetP(Eigen::MatrixXd P_in)
+void KalmanFilter::Prediction(const double current_time_imu, const Eigen::Vector3d& gyro, const Eigen::Vector3d& acc)
 {
-    P_ = P_in;
-    // std::cout << "before_kf P_: " << std::endl << P_ << std::endl;
-}
+    double delta_t = current_time_imu - previous_time_imu_;
+    previous_time_imu_ = current_time_imu;
 
-void KalmanFilter::SetQ(Eigen::MatrixXd Q_in)
-{
-    Q_ = Q_in;
-}
+    // std::cout << "delta_t: " << delta_t << std::endl;
 
-void KalmanFilter::SetH(Eigen::MatrixXd H_in)
-{
-    H_ = H_in;
-}
+    if(delta_t > 0.5)
+    {
+        std::cout << "IMU time interval is too large..." << std::endl;
+        return;
+    }
 
-void KalmanFilter::SetR(Eigen::MatrixXd R_in)
-{
-    R_ = R_in;
-}
+    // 欧拉角转四元数 角度 = 角速度 x 时间 quaternion = yawAngle * pitchAngle * rollAngle
+    Eigen::Quaterniond quat_wdt = Eigen::Quaterniond(
+        Eigen::AngleAxisd(gyro.x() * delta_t, Eigen::Vector3d::UnitX()) *
+        Eigen::AngleAxisd(gyro.y() * delta_t, Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(gyro.z() * delta_t, Eigen::Vector3d::UnitZ()));
 
-void KalmanFilter::AddMeasurement(const tf::StampedTransform& meas)
-{
-    ROS_DEBUG("AddMeasurement from %s to %s:  (%f, %f, %f)  (%f, %f, %f, %f)",
-              meas.frame_id_.c_str(), meas.child_frame_id_.c_str(),
-              meas.getOrigin().x(), meas.getOrigin().y(), meas.getOrigin().z(),
-              meas.getRotation().x(),  meas.getRotation().y(), 
-              meas.getRotation().z(), meas.getRotation().w());
-    transformer_.setTransform(meas);
-}
+    // std::cout << "acc: " << std::endl << acc << std::endl;
 
-void KalmanFilter::AddMeasurement(const tf::StampedTransform& meas, const Eigen::MatrixXd& cov)
-{
-    // for(unsigned int i = 0; i < cov.rows(); i++)
-    // {
-    //     if(cov(i, i) == 0){
-    //         ROS_ERROR("Covariance specified for measurement on topic %s is zero", meas.child_frame_id_.c_str());
-    //         return;
-    //     }
-    // }
+    // Eigen::Vector3d acc = Eigen::Vector3d(acc.x(), acc.y(), acc.z());
 
-    AddMeasurement(meas);
+    // std::cout << "before x_: " << std::endl << x_(6) << x_(7) << x_(8) << x_(9) << std::endl;
+
+    Eigen::Quaterniond previous_quat = Eigen::Quaterniond(x_(9), x_(6), x_(7), x_(8));
+
+    // std::cout << "previous_quat: " << std::endl << previous_quat.x() << ", " << previous_quat.y() << ", " << previous_quat.z() << ", " << previous_quat.w() << std::endl;
+
+    // std::cout << "quat_wdt: " << std::endl << quat_wdt.x() << ", " << quat_wdt.y() << ", " << quat_wdt.z() << ", " << quat_wdt.w() << std::endl;
+
+    // 四元数转旋转矩阵
+    Eigen::MatrixXd rot_mat = previous_quat.toRotationMatrix();
+
+    // std::cout << "rot_mat: " << std::endl << rot_mat << std::endl;
+
+    // 预测四元数 = 当前四元数 x 初始四元数 两个四元数的乘积也表示一个旋转
+    Eigen::Quaterniond predicted_quat = quat_wdt * previous_quat;
+
+    // std::cout << "predicted_quat: " << std::endl << predicted_quat.x() << ", " << predicted_quat.y() << ", " << predicted_quat.z() << ", " << predicted_quat.w() << std::endl;
+
+    // pose update
+    /**********************************************
+    目前为单轴IMU，无法通过加速度积分出位移和速度
+    ***********************************************/
+    x_.segment(0, 3) = x_.segment(0, 3) + x_.segment(3, 3) * delta_t + 0.5 * (rot_mat * acc - gravity_) * delta_t * delta_t;
+    x_.segment(3, 3) = x_.segment(3, 3) + (rot_mat * acc - gravity_) * delta_t;
+    x_.segment(6, 4) = Eigen::Vector4d(predicted_quat.x(), predicted_quat.y(), predicted_quat.z(), predicted_quat.w());
+
+    // std::cout << "x_: " << std::endl << x_ << std::endl;
+
+    Eigen::Matrix<double, 9, 9> F = Eigen::Matrix<double, 9, 9>::Identity();
+    F.block<3, 3>(0, 3) = delta_t * Eigen::Matrix3d::Identity();
+
+    Eigen::Matrix3d acc_skew;
+    acc_skew << 
+        0, -acc(2), acc(1),
+        acc(2), 0, -acc(0),
+        -acc(1), acc(0), 0;
+    F.block<3,3>(3, 6) = rot_mat * (-acc_skew) * delta_t;
+
+    Eigen::MatrixXd Q = Eigen::Matrix<double, 6, 6>::Identity();
+    Q.block<3,3>(0,0) = 0.33 * Q.block<3,3>(0,0);
+    Q.block<3,3>(3,3) = 0.33 * Q.block<3,3>(3,3);
+
+    Q = Q * (delta_t * delta_t);
+
+    Eigen::MatrixXd L = Eigen::Matrix<double, 9, 6>::Zero();
+    L.block<3,3>(3,0) = Eigen::Matrix3d::Identity();
+    L.block<3,3>(6,3) = Eigen::Matrix3d::Identity();
+
+    P_ = F * P_ * F.transpose() + L * Q * L.transpose();
+
+    // std::cout << "P_: " << std::endl << P_ << std::endl;
+
 }
 
 void KalmanFilter::Prediction()
@@ -100,7 +127,7 @@ void KalmanFilter::Prediction()
 
 }
 
-void KalmanFilter::KFUpdate(Eigen::Vector2d z){
+void KalmanFilter::KFUpdate(Eigen::VectorXd z){
 
     // std::cout << "z: " << std::endl << z << std::endl;
 
@@ -132,64 +159,72 @@ void KalmanFilter::KFUpdate(Eigen::Vector2d z){
     I_ = Eigen::MatrixXd::Identity(x_size, x_size);
     P_ = (I_ - K_ * H_) * P_;
 
-    // std::cout << "KFUpdate_after x_: " << x_(0) << ", " << x_(1) << std::endl;
+    // std::cout << "KFUpdate_after x_: " << std::endl << x_.segment(0,2) << std::endl;
 
     // std::cout << "KFUpdate_after P_: " << std::endl << P_ << std::endl;
 
+    // Eigen::MatrixXd F = Eigen::Matrix<double, 10, 10>::Identity();
+
+    // std::cout << "F: " << std::endl << F << std::endl;
+
+    // Eigen::Affine3d aff = Eigen::Affine3d::Identity();
+
+    // aff.translation() = Eigen::Vector3d(0.1,0.1,0.1);
+
+    // std::cout << "aff: " << std::endl << aff.translation() << std::endl;
+
 
 }
 
-void KalmanFilter::EKFUpdate(Eigen::VectorXd z)
+void KalmanFilter::KFUpdate(const Eigen::Vector3d& pose_msg, const Eigen::Vector3d& variance)
 {
-    double rho = sqrt(x_(0)*x_(0) + x_(1)*x_(1));
-    double theta = atan2(x_(1), x_(0));
-    double rho_dot = (x_(0)*x_(2) + x_(1)*x_(3)) / rho;
-    Eigen::VectorXd h = Eigen::VectorXd(3);
-    h << rho, theta, rho_dot;
-    y_ = z - h;
+    Eigen::Matrix3d R;
+    R << variance.x(), 0, 0,
+         0, variance.y(), 0,
+         0, 0, variance.z();
 
-    CalculateJacobianMatrix();
+    Eigen::MatrixXd H = Eigen::Matrix<double, 3, 9>::Zero();
+    H.block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+    Eigen::MatrixXd K = P_ * H.transpose() * (H * P_ * H.transpose() + R).inverse();
 
-    S_ = H_ * P_ * H_.transpose() + R_;
-    K_ = P_ * H_.transpose() * S_.inverse();
-    x_ = x_ + (K_ * y_);
-    int x_size = x_.size();
-    I_ = Eigen::MatrixXd::Identity(x_size, x_size);
-    P_ = (I_ - K_ * H_) * P_;
+    Eigen::VectorXd dx = K * (pose_msg - x_.segment(0, 3));
 
+    // std::cout << "dx: " << std::endl << dx << std::endl;
+
+    x_.segment(0, 3) = x_.segment(0, 3) + dx.segment(0, 3);
+    x_.segment(3, 3) = x_.segment(3, 3) + dx.segment(3, 3);
+
+    double norm_quat = sqrt(
+        pow(dx(6), 2) + 
+        pow(dx(7), 2) +
+        pow(dx(8), 2));
+
+    // std::cout << "norm_quat: " << std::endl << norm_quat << std::endl;
+
+    if(norm_quat < 1e-10)
+    {
+        x_.segment(6, 4) = Eigen::Vector4d(0, 0, 0, cos(norm_quat / 2));
+    }    
+    else
+    {
+        // 等效旋转轴方向向量 K = [Kx, Ky, Kz] 等效旋转角Θ，则四元数q=(x, y, z,w), x = Kx . sin(Θ/2), y = Ky . sin(Θ/2), z = Kz . sin(Θ/2), w = cos(Θ/2)
+        x_.segment(6, 4) = Eigen::Vector4d(
+            sin(norm_quat / 2) * dx(6) / norm_quat,
+            sin(norm_quat / 2) * dx(7) / norm_quat,
+            sin(norm_quat / 2) * dx(8) / norm_quat,
+            cos(norm_quat / 2));
+    }
+
+    P_ = (Eigen::Matrix<double, 9, 9>::Identity() - K * H) * P_;
+
+    // std::cout << "P_: " << std::endl << P_ << std::endl;
 }
+
 
 Eigen::VectorXd KalmanFilter::GetX()
 {
-    // Eigen::VectorXd x_ = Eigen::VectorXd(4, 1);
     return x_;
 }
-
-void KalmanFilter::CalculateJacobianMatrix()
-{
-    Eigen::MatrixXd Hj(3, 4);
-
-    // get state parameters
-    float px = x_(0);
-    float py = x_(1);
-    float vx = x_(2);
-    float vy = x_(3);
-
-    // pre-compute a set of terms to avoid repeated calculation
-    float c1 = px * px + py * py;
-    float c2 = sqrt(c1);
-    float c3 = (c1 * c2);
-
-    // Check division by zero
-    if(fabs(c1) < 0.0001){
-        H_ = Hj;
-        return;
-    }
-
-    Hj << (px/c2), (py/c2), 0, 0,
-         -(py/c1), (px/c1), 0, 0,
-          py*(vx*py - vy*px)/c3, px*(px*vy - py*vx)/c3, px/c2, py/c2;
-    H_ = Hj;
 }
-}
+
 

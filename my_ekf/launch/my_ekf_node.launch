@@ -1,4 +1,10 @@
 <launch>
-  <node pkg="my_ekf" type="kalman_filter_node" name="kalman_filter_node" output="screen">    
+  <node pkg="my_ekf" type="kalman_filter_node" name="kalman_filter_node" output="screen">
+     <param name="output_frame" value="odom_combined"/>
+     <param name="base_footprint_frame" value="base_footprint"/>
+     <param name="wheel_odom_used" value="true"/>
+     <param name="icp_odom_used" value="true"/>
+     <param name="imu_used" value="true"/>
+     <param name="gps_used" value="false"/>    
   </node>
 </launch>

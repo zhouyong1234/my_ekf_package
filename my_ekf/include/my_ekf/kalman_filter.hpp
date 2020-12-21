@@ -4,6 +4,8 @@
 #include <tf/tf.h>
 #include <ros/ros.h>
 #include "Eigen/Eigen"
+#include "geometry_msgs/PoseStamped.h"
+
 
 namespace my_ekf_package
 {
@@ -13,35 +15,25 @@ public:
     ~KalmanFilter();
 
     bool IsInitialized();
-
-    void Initialization(Eigen::Vector4d x_in);
-
-    void Initialize(const tf::Transform& transform, const ros::Time& time);
-
-    void SetF(Eigen::MatrixXd F_in);
-    void SetP(Eigen::MatrixXd P_in);
-    void SetQ(Eigen::MatrixXd Q_in);
-    void SetH(Eigen::MatrixXd H_in);
-    void SetR(Eigen::MatrixXd R_in);
-
-    void AddMeasurement(const tf::StampedTransform& meas);
-
-    void AddMeasurement(const tf::StampedTransform& meas, const Eigen::MatrixXd& cov);
-
+    void Initialization(Eigen::VectorXd x_in);
     void Prediction();
-    void KFUpdate(Eigen::Vector2d z);
-    void EKFUpdate(Eigen::VectorXd z);
+    void Prediction(const double current_time_imu, const Eigen::Vector3d& gyro, const Eigen::Vector3d& acc);
+    void KFUpdate(Eigen::VectorXd z);
+    void KFUpdate(const Eigen::Vector3d& pose_msg, const Eigen::Vector3d& variance);
     Eigen::VectorXd GetX();
 
     
 private:
-    void CalculateJacobianMatrix();
-
     bool is_initialized_;
+    double previous_time_imu_;
 
-    Eigen::Vector4d x_;
+    Eigen::Vector3d gravity_;
+    Eigen::Matrix<double, 10, 1> x_;
+    Eigen::Matrix<double, 9, 9> P_;
+
+    // Eigen::Vector4d x_;
     Eigen::MatrixXd F_;
-    Eigen::MatrixXd P_;
+    // Eigen::MatrixXd P_;
     Eigen::MatrixXd Q_;
     Eigen::MatrixXd H_;
     Eigen::MatrixXd R_;
@@ -50,7 +42,6 @@ private:
     Eigen::MatrixXd K_;
     Eigen::MatrixXd I_;
 
-    tf::Transformer transformer_;
 };
 }
 

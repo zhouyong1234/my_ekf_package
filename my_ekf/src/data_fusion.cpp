@@ -8,39 +8,25 @@ DataFusion::DataFusion()
     is_initialized_ = false;
     odom_active_ = false;
     odom_initializing_ = false;
-    last_timestamp_ = 0.0;
+    previous_odom_mat_ = Eigen::Matrix4d::Identity();
 
-    // 初始化激光雷达的测量矩阵 H_lidar_
-    // Set Lidar's measurement matrix H_lidar_
-    H_lidar_ = Eigen::MatrixXd(2, 4);
-    H_lidar_ << 1, 0, 0, 0,
-                0, 1, 0, 0;
-
-    // 设置传感器的测量噪声矩阵，一般由传感器厂商提供，如不提供，也可通过有经验的工程师调试得到
-    // Set R. R is provided by Sensor supplier, in sensor datasheet
-    // set measurement covariance matrix
-    R_lidar_ = Eigen::MatrixXd(2, 2);
-    R_lidar_ << 0.0225, 0,
-                0, 0.0225;
-
-    // Measurement covariance matrix - radar
-    R_radar_ = Eigen::MatrixXd(3, 3);
-    R_radar_ << 0.09, 0, 0,
-                0, 0.0009, 0,
-                0, 0, 0.09;
+    // 观测值方差
+    wheel_odom_var_ << 0.2, 0.2, 0.2;  
+    icp_odom_var_ <<  0.2, 0.2, 0.2;
+    gnss_var_ << 0.2, 0.2, 0.2;
 
     ros::NodeHandle nh;
     ros::NodeHandle nh_private("~");
-
-    double freq;
-    nh.param("freq", freq, 30.0);
-
+    
     nh.param("output_frame", output_frame_, std::string("odom_combined"));
     nh.param("base_footprint_frame", base_footprint_frame_, std::string("base_footprint"));
+    nh_private.param("wheel_odom_used", wheel_odom_used_, true);
+    nh_private.param("icp_odom_used", icp_odom_used_, true);
+    nh_private.param("imu_used", imu_used_, true);
+    nh_private.param("gps_used", gps_used_, true);
 
     ROS_INFO_STREAM("output_frame: " << output_frame_);
 
-    // timer_ = nh_private.createTimer(r
     timer_ = nh.createTimer(ros::Duration(0.1), &DataFusion::spin, this);
 
     // ROS_INFO_STREAM("1111111111111111111");
@@ -49,53 +35,80 @@ DataFusion::DataFusion()
 
     pose_pub_ = nh.advertise<nav_msgs::Odometry>("odom_combined", 10);
 
+    imu_data_sub_ = nh.subscribe("imu_data", 10, &DataFusion::imuDataCallback, this);
+
     wheel_odom_sub_ = nh.subscribe("wheel_odom", 10, &DataFusion::wheelOdomCallback, this);
 
     icp_odom_sub_ = nh.subscribe("icp_odom", 10, &DataFusion::icpOdomCallback, this);
+
+    gnss_data_sub_ = nh.subscribe("gnss", 10, &DataFusion::gnssCallback, this);
 
     // ROS_INFO_STREAM("2222222222222222222");
 
 }
 
-DataFusion::~DataFusion()
+DataFusion::~DataFusion() {}
+
+void DataFusion::imuDataCallback(const sensor_msgs::Imu::ConstPtr& imu_data)
 {
 
+    current_stamp_ = imu_data->header.stamp;
+
+    if(is_initialized_)
+    {
+        double current_time_imu = imu_data->header.stamp.sec + imu_data->header.stamp.nsec * 1e-9;
+        gyro = Eigen::Vector3d(imu_data->angular_velocity.x, imu_data->angular_velocity.y, imu_data->angular_velocity.z);
+        acc = Eigen::Vector3d(imu_data->linear_acceleration.x, imu_data->linear_acceleration.y, imu_data->linear_acceleration.z);
+
+        kf_.Prediction(current_time_imu, gyro, acc);
+    }
 }
 
 void DataFusion::wheelOdomCallback(const nav_msgs::Odometry::ConstPtr& wheel_odom)
 {
     // ROS_INFO_STREAM("WheelOdom callback at time: " << ros::Time::now().toSec());
 
-    wheel_odom_stamp_ = wheel_odom->header.stamp;
+    current_stamp_ = wheel_odom->header.stamp;
 
-    // ROS_INFO_STREAM("wheel_odom_stamp_: " << wheel_odom_stamp_ );
+    if(is_initialized_ && wheel_odom_used_)
+    {
+        Eigen::Affine3d aff;
+        tf2::fromMsg(wheel_odom->pose.pose, aff);
+        Eigen::Matrix4d odom_mat = aff.matrix();
+        if(previous_odom_mat_ == Eigen::Matrix4d::Identity())
+        {
+            // 初始帧位姿
+            current_pose_odom_ = current_pose_;
+            // 初始帧位姿矩阵
+            previous_odom_mat_ = odom_mat;
+            return;
+        }
 
-    tf::Quaternion q;
-    tf::quaternionMsgToTF(wheel_odom->pose.pose.orientation, q);
+        Eigen::Affine3d current_aff;
+        // 计算相对运动，由前两帧的位姿增量计算下一帧的位姿
+        tf2::fromMsg(current_pose_odom_.pose, current_aff);
+        // 初始帧的位姿
+        Eigen::Matrix4d current_trans = current_aff.matrix();
+        // 下一帧位姿 = 位姿增量 x 当前帧位姿
+        current_trans = current_trans * previous_odom_mat_.inverse() * odom_mat;
 
-    wheel_odom_mean = Eigen::Vector4d(wheel_odom->pose.pose.position.x, wheel_odom->pose.pose.position.y, wheel_odom->twist.twist.linear.x, wheel_odom->twist.twist.linear.y);
+        Eigen::Vector3d pose_msg;
+        pose_msg(0) = current_trans(0, 3);
+        pose_msg(1) = current_trans(1, 3);
+        pose_msg(2) = current_trans(2, 3);
 
-    // std::cout << "wheel_odom_mean: " << std::endl << wheel_odom_mean << std::endl;
+        kf_.KFUpdate(pose_msg, wheel_odom_var_);
 
-    wheel_odom_meas_ = tf::Transform(q, tf::Vector3(wheel_odom->pose.pose.position.x, wheel_odom->pose.pose.position.y, 0));
-
-    // std::cout << "position.x: " << wheel_odom->pose.pose.position.x << std::endl;
-
-    wheel_odom_covariance_ = Eigen::MatrixXd(6, 6);
-    for(unsigned int i = 0; i < 6; i++)
-        for(unsigned int j = 0; j < 6; j++)
-            wheel_odom_covariance_(i, j) = wheel_odom->pose.covariance[6*i+j];
-
-    // std::cout << "wheel_odom_covariance_: " << std::endl << wheel_odom_covariance_ << std::endl;
-
-    kf_.AddMeasurement(tf::StampedTransform(wheel_odom_meas_.inverse(), wheel_odom_stamp_, base_footprint_frame_, "wheel_odom"), wheel_odom_covariance_);
+        current_pose_odom_ = current_pose_;
+        previous_odom_mat_ = odom_mat;
+    }
 
     if(!odom_active_)
     {
         if(!odom_initializing_)
         {
             odom_initializing_ = true;
-            wheel_odom_init_stamp_ = wheel_odom_stamp_;
+            wheel_odom_init_stamp_ = current_stamp_;
             ROS_INFO_STREAM("Initializing odom");
         }
 
@@ -104,6 +117,27 @@ void DataFusion::wheelOdomCallback(const nav_msgs::Odometry::ConstPtr& wheel_odo
 
         if(filter_stamp_ >= wheel_odom_init_stamp_)
         {
+
+            current_pose_.header.stamp = wheel_odom->header.stamp;
+            current_pose_.pose.position.x = wheel_odom->pose.pose.position.x;
+            current_pose_.pose.position.y = wheel_odom->pose.pose.position.y;
+            current_pose_.pose.position.z = wheel_odom->pose.pose.position.z;
+            current_pose_.pose.orientation.z = wheel_odom->pose.pose.orientation.x;
+            current_pose_.pose.orientation.y = wheel_odom->pose.pose.orientation.y;
+            current_pose_.pose.orientation.z = wheel_odom->pose.pose.orientation.z;
+            current_pose_.pose.orientation.w = wheel_odom->pose.pose.orientation.w;
+
+            wheel_odom_init_ = Eigen::VectorXd::Zero(10);
+            wheel_odom_init_(0) = wheel_odom->pose.pose.position.x;
+            wheel_odom_init_(1) = wheel_odom->pose.pose.position.y;
+            wheel_odom_init_(2) = wheel_odom->pose.pose.position.z;
+            wheel_odom_init_(3) = wheel_odom->twist.twist.linear.x;
+            wheel_odom_init_(4) = wheel_odom->twist.twist.linear.y;
+            wheel_odom_init_(5) = wheel_odom->twist.twist.linear.z;
+            wheel_odom_init_(6) = wheel_odom->pose.pose.orientation.x;
+            wheel_odom_init_(7) = wheel_odom->pose.pose.orientation.y;
+            wheel_odom_init_(8) = wheel_odom->pose.pose.orientation.z;
+            wheel_odom_init_(9) = wheel_odom->pose.pose.orientation.w;
             odom_active_ = true;
             odom_initializing_ = false;
             ROS_INFO_STREAM("Odom activated");
@@ -116,22 +150,101 @@ void DataFusion::icpOdomCallback(const nav_msgs::Odometry::ConstPtr& icp_odom)
 {
     // ROS_INFO_STREAM("IcpOdom callback at time: " << ros::Time::now().toSec());
 
-    icp_odom_stamp_ = icp_odom->header.stamp;
-    tf::Quaternion q;
-    tf::quaternionMsgToTF(icp_odom->pose.pose.orientation, q);
+    current_stamp_ = icp_odom->header.stamp;
 
-    icp_odom_mean = Eigen::Vector2d(icp_odom->pose.pose.position.x, icp_odom->pose.pose.position.y);
+    if(is_initialized_ && icp_odom_used_)
+    {
+        // 当前里程计位姿矩阵
+        Eigen::Affine3d aff;
+        tf2::fromMsg(icp_odom->pose.pose, aff);
+        Eigen::Matrix4d odom_mat = aff.matrix();
+        if(previous_odom_mat_ == Eigen::Matrix4d::Identity())
+        {
+            current_pose_odom_ = current_pose_;
+            previous_odom_mat_ = odom_mat;
+            return;
+        }
 
-    icp_odom_meas_ = tf::Transform(q, tf::Vector3(icp_odom->pose.pose.position.x, icp_odom->pose.pose.position.y, 0));
+        Eigen::Affine3d current_aff;
+        // 计算相对运动，由前两帧的位姿增量计算下一帧的位姿
+        tf2::fromMsg(current_pose_odom_.pose, current_aff);
+        // 初始帧的位姿
+        Eigen::Matrix4d current_trans = current_aff.matrix();
+        // 下一帧位姿 = 位姿增量 x 当前帧位姿
+        current_trans = current_trans * previous_odom_mat_.inverse() * odom_mat;
 
-    icp_odom_covariance_ = Eigen::MatrixXd(6, 6);
-    for(unsigned int i = 0; i < 6; i++)
-        for(unsigned int j = 0; j < 6; j++)
-            icp_odom_covariance_(i, j) = icp_odom->pose.covariance[6*i+j];
+        Eigen::Vector3d pose_msg;
+        pose_msg(0) = current_trans(0, 3);
+        pose_msg(1) = current_trans(1, 3);
+        pose_msg(2) = current_trans(2, 3);
 
-    // std::cout << "odom_covariance_: " << std::endl << icp_odom_covariance_ << std::endl;
+        kf_.KFUpdate(pose_msg, icp_odom_var_);
 
-    kf_.AddMeasurement(tf::StampedTransform(icp_odom_meas_.inverse(), icp_odom_stamp_, base_footprint_frame_, "odom"), icp_odom_covariance_);
+        current_pose_odom_ = current_pose_;
+        previous_odom_mat_ = odom_mat;
+    }
+
+}
+
+void DataFusion::gnssCallback(const geometry_msgs::PoseStamped::ConstPtr& gnss)
+{
+    current_stamp_ = gnss->header.stamp;
+
+    if(is_initialized_ && gps_used_)
+    {
+        Eigen::Vector3d pose_msg;
+        pose_msg(0) = gnss->pose.position.x;
+        pose_msg(1) = gnss->pose.position.y;
+        pose_msg(2) = gnss->pose.position.z;
+
+        kf_.KFUpdate(pose_msg, gnss_var_);
+    }
+}
+
+void DataFusion::broadcastPose()
+{
+    // 发布融合后的位姿
+    nav_msgs::Odometry combined_odom_msg;
+    combined_odom_msg.header.stamp = current_stamp_;
+    combined_odom_msg.header.frame_id= "odom";
+    combined_odom_msg.child_frame_id = "base_footprint";
+    combined_odom_msg.pose.pose.position.x = kf_.GetX()(0);
+    combined_odom_msg.pose.pose.position.y = kf_.GetX()(1);
+    combined_odom_msg.pose.pose.position.z = kf_.GetX()(2);
+    combined_odom_msg.twist.twist.linear.x = kf_.GetX()(3);
+    combined_odom_msg.twist.twist.linear.y = kf_.GetX()(4);
+    combined_odom_msg.twist.twist.linear.z = kf_.GetX()(5);
+    combined_odom_msg.pose.pose.orientation.x = kf_.GetX()(6);
+    combined_odom_msg.pose.pose.orientation.y = kf_.GetX()(7);
+    combined_odom_msg.pose.pose.orientation.z = kf_.GetX()(8);
+    combined_odom_msg.pose.pose.orientation.w = kf_.GetX()(9);
+    pose_pub_.publish(combined_odom_msg);
+
+    std::cout << "combined_odom_msg: " << combined_odom_msg.pose.pose.position.x << ", " << 
+                                          combined_odom_msg.pose.pose.position.y << ", " <<
+                                          combined_odom_msg.pose.pose.position.z << ", " <<
+                                          combined_odom_msg.twist.twist.linear.x << ", " <<
+                                          combined_odom_msg.twist.twist.linear.y << ", " <<
+                                          combined_odom_msg.twist.twist.linear.z << ", " <<
+                                          combined_odom_msg.pose.pose.orientation.x << ", " <<
+                                          combined_odom_msg.pose.pose.orientation.y << ", " <<
+                                          combined_odom_msg.pose.pose.orientation.z << ", " <<
+                                          combined_odom_msg.pose.pose.orientation.w << std::endl;
+
+    // 发布tf变换
+    tfb_.sendTransform(
+        tf::StampedTransform(
+            tf::Transform(
+                tf::Quaternion(
+                            combined_odom_msg.pose.pose.orientation.x,
+                            combined_odom_msg.pose.pose.orientation.y,
+                            combined_odom_msg.pose.pose.orientation.z,
+                            combined_odom_msg.pose.pose.orientation.w).normalized(), 
+                tf::Vector3(
+                    combined_odom_msg.pose.pose.position.x,
+                    combined_odom_msg.pose.pose.position.y,
+                    combined_odom_msg.pose.pose.position.z)), 
+            ros::Time::now(), "odom", "base"));
 }
 
 void DataFusion::spin(const ros::TimerEvent& e)
@@ -143,170 +256,30 @@ void DataFusion::spin(const ros::TimerEvent& e)
 
     if(is_initialized_)
     {
-        // 求前后两帧的时间差，数据包中的时间戳单位为微秒，处以1e6，转换为秒
-        double delta_t = wheel_odom_stamp_.toSec() - last_timestamp_;
-        last_timestamp_ = wheel_odom_stamp_.toSec();
-
-        // std::cout << "last_timestamp_: " << last_timestamp_ << std::endl;
-
-
-        // 设置状态转移矩阵F
-        Eigen::MatrixXd F = Eigen::MatrixXd(4, 4);
-        F << 1.0, 0.0, delta_t, 0.0,
-             0.0, 1.0, 0.0, delta_t,
-             0.0, 0.0, 1.0, 0.0,
-             0.0, 0.0, 0.0, 1.0;
-
-        // std::cout << "delta_t: " << std::endl << delta_t << std::endl;
-
-        kf_.SetF(F);
-
-        // 预测
-        kf_.Prediction();
-
-        // 更新
-        kf_.SetH(H_lidar_);
-        kf_.SetR(R_lidar_);
-        kf_.KFUpdate(icp_odom_mean);
-
+        broadcastPose();
     }
 
     // 第一帧数据用于初始化 Kalman 滤波器
     if (odom_active_ && !is_initialized_) {
 
         // 避免运算时，0作为被除数
-        if (fabs(wheel_odom_mean(0)) < 0.001) {
-            wheel_odom_mean(0) = 0.001;
+        if (fabs(wheel_odom_init_(0)) < 0.001) {
+            wheel_odom_init_(0) = 0.001;
         }
-        if (fabs(wheel_odom_mean(1)) < 0.001) {
-            wheel_odom_mean(1) = 0.001;
+        if (fabs(wheel_odom_init_(1)) < 0.001) {
+            wheel_odom_init_(1) = 0.001;
+        }
+        if(fabs(wheel_odom_init_(2)) < 0.001) {
+            wheel_odom_init_(2) = 0.001;
         }
 
-        // 初始化Kalman滤波器
-        kf_.Initialization(wheel_odom_mean);
+        // 使用里程计位姿初始化Kalman滤波器
+        kf_.Initialization(wheel_odom_init_);
 
-        // std::cout << "wheel_odom_mean: " << std::endl << wheel_odom_mean << std::endl;
-
-        // 设置协方差矩阵P
-        Eigen::MatrixXd P = Eigen::MatrixXd(4, 4);
-        P << 1.0, 0.0, 0.0, 0.0,
-             0.0, 1.0, 0.0, 0.0,
-             0.0, 0.0, 1000.0, 0.0,
-             0.0, 0.0, 0.0, 1000.0;
-        kf_.SetP(P);
-
-        // 设置过程噪声Q
-        Eigen::MatrixXd Q = Eigen::MatrixXd(4, 4);
-        Q << 1.0, 0.0, 0.0, 0.0,
-             0.0, 1.0, 0.0, 0.0,
-             0.0, 0.0, 1.0, 0.0,
-             0.0, 0.0, 0.0, 1.0;
-        kf_.SetQ(Q);
-
-        // // 存储第一帧的时间戳，供下一帧数据使用
-        last_timestamp_ = wheel_odom_init_stamp_.toSec();
         is_initialized_ = true;
         return;
     }
 
-
-    std::cout << "KFUpdate_after x_: " << kf_.GetX()(0) << ", " << kf_.GetX()(1) << std::endl;
-
-    nav_msgs::Odometry combined_odom_msg;
-    combined_odom_msg.header.frame_id= "odom";
-    combined_odom_msg.pose.pose.position.x = kf_.GetX()(0);
-    combined_odom_msg.pose.pose.position.y = kf_.GetX()(1);
-    pose_pub_.publish(combined_odom_msg);
-
-}
-
-void DataFusion::Process(Measurement measurement)
-{
-    // 第一帧数据用于初始化 Kalman 滤波器
-    if (!is_initialized_) {
-        Eigen::Vector4d x;
-        if (measurement.sensor_type_ == Measurement::LASER) {
-            // 如果第一帧数据是激光雷达数据，没有速度信息，因此初始化时只能传入位置，速度设置为0
-            x << measurement.raw_measurements_[0], measurement.raw_measurements_[1], 0, 0;
-        } else if (measurement.sensor_type_ == Measurement::RADAR) {
-            // 如果第一帧数据是毫米波雷达，可以通过三角函数算出x-y坐标系下的位置和速度
-            float rho = measurement.raw_measurements_[0];
-            float phi = measurement.raw_measurements_[1];
-            float rho_dot = measurement.raw_measurements_[2];
-            float position_x = rho * cos(phi);
-            if (position_x < 0.0001) {
-                position_x = 0.0001;
-            }
-            float position_y = rho * sin(phi);
-            if (position_y < 0.0001) {
-                position_y = 0.0001;
-            }
-            float velocity_x = rho_dot * cos(phi);
-            float velocity_y = rho_dot * sin(phi);
-            x << position_x, position_y, velocity_x , velocity_y;
-        }
-
-        // std::cout << "x " << x << std::endl;
-        
-        // 避免运算时，0作为被除数
-        if (fabs(x(0)) < 0.001) {
-            x(0) = 0.001;
-        }
-        if (fabs(x(1)) < 0.001) {
-            x(1) = 0.001;
-        }
-        // 初始化Kalman滤波器
-        kf_.Initialization(x);
-
-        // 设置协方差矩阵P
-        Eigen::MatrixXd P = Eigen::MatrixXd(4, 4);
-        P << 1.0, 0.0, 0.0, 0.0,
-             0.0, 1.0, 0.0, 0.0,
-             0.0, 0.0, 1000.0, 0.0,
-             0.0, 0.0, 0.0, 1000.0;
-        kf_.SetP(P);
-
-        // 设置过程噪声Q
-        Eigen::MatrixXd Q = Eigen::MatrixXd(4, 4);
-        Q << 1.0, 0.0, 0.0, 0.0,
-             0.0, 1.0, 0.0, 0.0,
-             0.0, 0.0, 1.0, 0.0,
-             0.0, 0.0, 0.0, 1.0;
-        kf_.SetQ(Q);
-
-        // 存储第一帧的时间戳，供下一帧数据使用
-        // last_timestamp_ = measurement.timestamp_;
-        is_initialized_ = true;
-        return;
-    }
-
-    // 求前后两帧的时间差，数据包中的时间戳单位为微秒，处以1e6，转换为秒
-    // double delta_t = (measurement.timestamp_ - last_timestamp_) / 1000000.0; // unit : s
-    // last_timestamp_ = measurement.timestamp_;
-
-    double delta_t = 1.0;
-
-    // 设置状态转移矩阵F
-    Eigen::MatrixXd F = Eigen::MatrixXd(4, 4);
-    F << 1.0, 0.0, delta_t, 0.0,
-         0.0, 1.0, 0.0, delta_t,
-         0.0, 0.0, 1.0, 0.0,
-         0.0, 0.0, 0.0, 1.0;
-    kf_.SetF(F);
-
-    // 预测
-    kf_.Prediction();
-
-    // 更新
-    if (measurement.sensor_type_ == Measurement::LASER) {
-        kf_.SetH(H_lidar_);
-        kf_.SetR(R_lidar_);
-        kf_.KFUpdate(measurement.raw_measurements_);
-    } else if (measurement.sensor_type_ == Measurement::RADAR) {
-        kf_.SetR(R_radar_);
-        // Jocobian矩阵Hj的运算已包含在EKFUpdate中
-        kf_.EKFUpdate(measurement.raw_measurements_);
-    }
 }
 }
 
