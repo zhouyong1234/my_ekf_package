@@ -14,6 +14,7 @@ DataFusion::DataFusion()
     wheel_odom_var_ << 0.2, 0.2, 0.2;  
     icp_odom_var_ <<  0.2, 0.2, 0.2;
     gnss_var_ << 0.2, 0.2, 0.2;
+    imu_var_ << 0.1, 0.1, 0.1, 0.1;
 
     ros::NodeHandle nh;
     ros::NodeHandle nh_private("~");
@@ -25,7 +26,9 @@ DataFusion::DataFusion()
     nh_private.param("imu_used", imu_used_, true);
     nh_private.param("gps_used", gps_used_, true);
 
-    ROS_INFO_STREAM("output_frame: " << output_frame_);
+    // ROS_INFO_STREAM("output_frame: " << output_frame_);
+
+    std::cout << "imu_used_: " << imu_used_ << std::endl;
 
     timer_ = nh.createTimer(ros::Duration(0.1), &DataFusion::spin, this);
 
@@ -49,32 +52,49 @@ DataFusion::DataFusion()
 
 DataFusion::~DataFusion() {}
 
+
+/*******************************************************
+IMU回调函数
+********************************************************/
 void DataFusion::imuDataCallback(const sensor_msgs::Imu::ConstPtr& imu_data)
 {
 
     current_stamp_ = imu_data->header.stamp;
 
-    if(is_initialized_)
+    if(is_initialized_ && imu_used_)
     {
         double current_time_imu = imu_data->header.stamp.sec + imu_data->header.stamp.nsec * 1e-9;
-        gyro = Eigen::Vector3d(imu_data->angular_velocity.x, imu_data->angular_velocity.y, imu_data->angular_velocity.z);
-        acc = Eigen::Vector3d(imu_data->linear_acceleration.x, imu_data->linear_acceleration.y, imu_data->linear_acceleration.z);
+        gyro_ = Eigen::Vector3d(imu_data->angular_velocity.x, imu_data->angular_velocity.y, imu_data->angular_velocity.z);
+        acc_ = Eigen::Vector3d(imu_data->linear_acceleration.x, imu_data->linear_acceleration.y, imu_data->linear_acceleration.z);
 
-        kf_.Prediction(current_time_imu, gyro, acc);
+        orientation_ = Eigen::Vector4d(imu_data->orientation.x, imu_data->orientation.y, imu_data->orientation.z, imu_data->orientation.w);
+        // kf_.Prediction(current_time_imu, gyro, acc);
+        // 使用IMU做更新
+        kf_.KFUpdate(orientation_, imu_var_);
     }
 }
 
+/*******************************************************
+轮式里程计回调函数
+********************************************************/
 void DataFusion::wheelOdomCallback(const nav_msgs::Odometry::ConstPtr& wheel_odom)
 {
     // ROS_INFO_STREAM("WheelOdom callback at time: " << ros::Time::now().toSec());
+
+    
 
     current_stamp_ = wheel_odom->header.stamp;
 
     if(is_initialized_ && wheel_odom_used_)
     {
+        double current_time_wheel_odom = wheel_odom->header.stamp.sec + wheel_odom->header.stamp.nsec * 1e-9;
+
         Eigen::Affine3d aff;
         tf2::fromMsg(wheel_odom->pose.pose, aff);
         Eigen::Matrix4d odom_mat = aff.matrix();
+
+        // std::cout << "odom_mat: " << std::endl << odom_mat << std::endl;
+
         if(previous_odom_mat_ == Eigen::Matrix4d::Identity())
         {
             // 初始帧位姿
@@ -90,14 +110,30 @@ void DataFusion::wheelOdomCallback(const nav_msgs::Odometry::ConstPtr& wheel_odo
         // 初始帧的位姿
         Eigen::Matrix4d current_trans = current_aff.matrix();
         // 下一帧位姿 = 位姿增量 x 当前帧位姿
+
+        // std::cout << "位姿增量: " << std::endl << current_trans * previous_odom_mat_.inverse() << std::endl;
+
         current_trans = current_trans * previous_odom_mat_.inverse() * odom_mat;
 
         Eigen::Vector3d pose_msg;
-        pose_msg(0) = current_trans(0, 3);
-        pose_msg(1) = current_trans(1, 3);
-        pose_msg(2) = current_trans(2, 3);
+        // pose_msg(0) = current_trans(0, 3);
+        // pose_msg(1) = current_trans(1, 3);
+        // pose_msg(2) = current_trans(2, 3);
+        pose_msg(0) = wheel_odom->pose.pose.position.x;
+        pose_msg(1) = wheel_odom->pose.pose.position.y;
+        pose_msg(2) = wheel_odom->pose.pose.position.z;
 
-        kf_.KFUpdate(pose_msg, wheel_odom_var_);
+        Eigen::Vector4d orientation_msg;
+        orientation_msg(0) = wheel_odom->pose.pose.orientation.x;
+        orientation_msg(1) = wheel_odom->pose.pose.orientation.y;
+        orientation_msg(2) = wheel_odom->pose.pose.orientation.z;
+        orientation_msg(3) = wheel_odom->pose.pose.orientation.w;
+
+        // std::cout << "下一帧位姿: " << current_trans(0, 3) << ", " << current_trans(1, 3) << ", " << current_trans(2, 3) << std::endl;
+        // 使用轮式里程计做预测
+        kf_.Prediction(current_time_wheel_odom, pose_msg, orientation_msg);
+
+        // kf_.KFUpdate(pose_msg, wheel_odom_var_);
 
         current_pose_odom_ = current_pose_;
         previous_odom_mat_ = odom_mat;
@@ -109,7 +145,7 @@ void DataFusion::wheelOdomCallback(const nav_msgs::Odometry::ConstPtr& wheel_odo
         {
             odom_initializing_ = true;
             wheel_odom_init_stamp_ = current_stamp_;
-            ROS_INFO_STREAM("Initializing odom");
+            // ROS_INFO_STREAM("Initializing odom");
         }
 
         // ROS_INFO_STREAM("filter_stamp_: " << filter_stamp_);
@@ -140,12 +176,15 @@ void DataFusion::wheelOdomCallback(const nav_msgs::Odometry::ConstPtr& wheel_odo
             wheel_odom_init_(9) = wheel_odom->pose.pose.orientation.w;
             odom_active_ = true;
             odom_initializing_ = false;
-            ROS_INFO_STREAM("Odom activated");
+            // ROS_INFO_STREAM("Odom activated");
         }
     }
 
 }
 
+/*******************************************************
+激光里程计回调函数
+********************************************************/
 void DataFusion::icpOdomCallback(const nav_msgs::Odometry::ConstPtr& icp_odom)
 {
     // ROS_INFO_STREAM("IcpOdom callback at time: " << ros::Time::now().toSec());
@@ -178,6 +217,7 @@ void DataFusion::icpOdomCallback(const nav_msgs::Odometry::ConstPtr& icp_odom)
         pose_msg(1) = current_trans(1, 3);
         pose_msg(2) = current_trans(2, 3);
 
+        // 使用激光里程计做更新
         kf_.KFUpdate(pose_msg, icp_odom_var_);
 
         current_pose_odom_ = current_pose_;
@@ -186,6 +226,9 @@ void DataFusion::icpOdomCallback(const nav_msgs::Odometry::ConstPtr& icp_odom)
 
 }
 
+/*******************************************************
+GNSS回调函数
+********************************************************/
 void DataFusion::gnssCallback(const geometry_msgs::PoseStamped::ConstPtr& gnss)
 {
     current_stamp_ = gnss->header.stamp;
@@ -197,10 +240,14 @@ void DataFusion::gnssCallback(const geometry_msgs::PoseStamped::ConstPtr& gnss)
         pose_msg(1) = gnss->pose.position.y;
         pose_msg(2) = gnss->pose.position.z;
 
+        // 使用gnss做更新
         kf_.KFUpdate(pose_msg, gnss_var_);
     }
 }
 
+/*******************************************************
+发布融合后的里程计信息和tf变换
+********************************************************/
 void DataFusion::broadcastPose()
 {
     // 发布融合后的位姿
@@ -276,6 +323,7 @@ void DataFusion::spin(const ros::TimerEvent& e)
         // 使用里程计位姿初始化Kalman滤波器
         kf_.Initialization(wheel_odom_init_);
 
+        ROS_INFO_STREAM("Initialized......");
         is_initialized_ = true;
         return;
     }

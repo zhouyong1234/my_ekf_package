@@ -63,10 +63,12 @@ private:
     ros::Time filter_stamp_, current_stamp_;
     ros::Time wheel_odom_init_stamp_;
 
-    Eigen::Vector3d gyro, acc;
+    Eigen::Vector3d gyro_, acc_;
+    Eigen::Vector4d orientation_;
     Eigen::MatrixXd previous_odom_mat_;
     Eigen::VectorXd wheel_odom_init_;
     Eigen::Vector3d wheel_odom_var_, icp_odom_var_, gnss_var_;
+    Eigen::Vector4d imu_var_;
 
     geometry_msgs::PoseStamped current_pose_;
     geometry_msgs::PoseStamped current_pose_odom_;

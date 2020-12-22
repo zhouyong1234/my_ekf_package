@@ -3,7 +3,7 @@
      <param name="output_frame" value="odom_combined"/>
      <param name="base_footprint_frame" value="base_footprint"/>
      <param name="wheel_odom_used" value="true"/>
-     <param name="icp_odom_used" value="true"/>
+     <param name="icp_odom_used" value="false"/>
      <param name="imu_used" value="true"/>
      <param name="gps_used" value="false"/>    
   </node>

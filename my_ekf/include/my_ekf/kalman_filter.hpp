@@ -17,8 +17,10 @@ public:
     bool IsInitialized();
     void Initialization(Eigen::VectorXd x_in);
     void Prediction();
-    void Prediction(const double current_time_imu, const Eigen::Vector3d& gyro, const Eigen::Vector3d& acc);
+    void Prediction(const double current_time_wheel_odom, const Eigen::Vector3d& pose_msg, const Eigen::Vector4d& orientation_msg);
+    // void Prediction(const double current_time_imu, const Eigen::Vector3d& gyro, const Eigen::Vector3d& acc);
     void KFUpdate(Eigen::VectorXd z);
+    void KFUpdate(const Eigen::Vector4d& orientation_msg, const Eigen::Vector4d& variance);
     void KFUpdate(const Eigen::Vector3d& pose_msg, const Eigen::Vector3d& variance);
     Eigen::VectorXd GetX();
 
@@ -26,10 +28,11 @@ public:
 private:
     bool is_initialized_;
     double previous_time_imu_;
+    double previous_time_wheel_odom_;
 
     Eigen::Vector3d gravity_;
     Eigen::Matrix<double, 10, 1> x_;
-    Eigen::Matrix<double, 9, 9> P_;
+    Eigen::Matrix<double, 10, 10> P_;
 
     // Eigen::Vector4d x_;
     Eigen::MatrixXd F_;
