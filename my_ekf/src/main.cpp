@@ -16,18 +16,17 @@ int main(int argc, char* argv[]) {
 
     DataFusion fuser;
 
-    ros::spin();
+    ros::Rate rate(10);
+    while(ros::ok())
+    {
+        ros::spinOnce();
 
+        fuser.run();
+
+        rate.sleep();
+    }
+
+    // ros::spin();
     return 0;
 
-    // for (size_t i = 0; i < measurement_list.size(); ++i) {
-    //     // fuser.Process(measurement_list[i]);
-    //     Eigen::Vector4d x_out = fuser.kf_.GetX();
-
-    //     std::cout << "x " << x_out(0)
-    //               << " y " << x_out(1)
-    //               << " vx " << x_out(2)
-    //               << " vy " << x_out(3) 
-    //               << std::endl;
-    // }
 }

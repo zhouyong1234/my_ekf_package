@@ -31,9 +31,25 @@ public:
     DataFusion();
     ~DataFusion();
 
+    bool run();
+
     KalmanFilter kf_;
 
 private:
+
+    bool readData();
+
+    bool hasData();
+
+    bool validData();
+
+    void predict();
+
+    void update();
+
+    void parseWheelOdomData(std::deque<nav_msgs::Odometry::ConstPtr>& deque_wheel_odom_data);
+
+    void parseGNSSData(std::deque<geometry_msgs::PoseStamped::ConstPtr>& deque_gnss_data);
 
     void spin(const ros::TimerEvent&);
 
@@ -62,6 +78,15 @@ private:
 
     ros::Time filter_stamp_, current_stamp_;
     ros::Time wheel_odom_init_stamp_;
+
+    std::deque<nav_msgs::Odometry::ConstPtr> new_wheel_odom_data_;
+    std::deque<geometry_msgs::PoseStamped::ConstPtr> new_gnss_data_;
+
+    std::deque<nav_msgs::Odometry::ConstPtr> wheel_odom_data_buff_;
+    std::deque<geometry_msgs::PoseStamped::ConstPtr> gnss_data_buff_;
+
+    nav_msgs::Odometry::ConstPtr current_wheel_odom_data_;
+    geometry_msgs::PoseStamped::ConstPtr current_gnss_data_;
 
     Eigen::Vector3d gyro_, acc_;
     Eigen::Vector4d orientation_;
