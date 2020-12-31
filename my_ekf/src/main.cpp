@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
 
     DataFusion fuser;
 
-    ros::Rate rate(10);
+    ros::Rate rate(20);
     while(ros::ok())
     {
         ros::spinOnce();

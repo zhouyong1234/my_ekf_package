@@ -171,8 +171,8 @@ void KalmanFilter::GNSSEKFUpdate(const Eigen::Vector2d& z)
     // std::cout << "y: " << std::endl << y << std::endl;
 
     Eigen::Matrix2d R;
-    R << 100.0, 0.0,
-         0.0, 100.0;
+    R << 1000.0, 0.0,
+         0.0, 1000.0;
 
     Eigen::Matrix2d S = H * P_ * H.transpose() + R;
     Eigen::Matrix<double, 4, 2> K = P_ * H.transpose() * S.inverse();

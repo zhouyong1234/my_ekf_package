@@ -395,6 +395,9 @@ void DataFusion::predict()
     static Eigen::Vector3d last_odom = Eigen::Vector3d::Zero();
 
     double current_yaw = tf::getYaw(current_wheel_odom_data_->pose.pose.orientation);
+
+    // std::cout << "current_yaw: " << current_yaw << std::endl;
+
     current_yaw -= first_yaw;
     current_yaw = atan2(sin(current_yaw), cos(current_yaw));
 
@@ -432,10 +435,16 @@ void DataFusion::predict()
         // v = dx / t
         double current_velocity = (current_odom - last_odom).norm() / delta_t;
 
-        if(current_odom.norm() <= last_odom.norm())
-        {
-            current_velocity = -current_velocity;
-        }
+        // if(current_odom.norm() <= last_odom.norm())
+        // {
+        //     current_velocity = -current_velocity;
+        // }
+
+        // std::cout << "----------------------------" << std::endl;
+        // std::cout << "last_yaw: " << last_yaw << std::endl;
+        // std::cout << "current_yaw: " << current_yaw << std::endl;
+        // std::cout << "----------------------------" << std::endl;
+
 
         // w = dΘ / t
         double current_omega = (current_yaw - last_yaw) / delta_t;
