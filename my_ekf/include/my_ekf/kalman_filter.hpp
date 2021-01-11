@@ -17,7 +17,7 @@ public:
     bool IsInitialized();
     void Initialization(Eigen::Vector4d x_in);
     // void Prediction();
-    void Prediction(const Eigen::Vector2d& input, const double delta_t);
+    void Prediction(const Eigen::Vector2d& input, const double delta_t, const double pf_inverse);
     Eigen::Matrix4d CalculateJacobian(const Eigen::Vector4d& x, const Eigen::Vector2d& input, const double delta_t);
     void IMUEKFUpdate(const Eigen::Vector2d& z);
     void GNSSEKFUpdate(const Eigen::Vector2d& z);

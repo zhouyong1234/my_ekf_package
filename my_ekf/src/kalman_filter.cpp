@@ -40,7 +40,7 @@ bool KalmanFilter::IsInitialized()
 /*******************************************************
 通过里程计预测位姿
 ********************************************************/
-void KalmanFilter::Prediction(const Eigen::Vector2d& input, const double delta_t)
+void KalmanFilter::Prediction(const Eigen::Vector2d& input, const double delta_t, const double pf_inverse)
 {
     // Xt+1 = Xt + V * dt * cosΘ
     // Yt+1 = Yt + V * dt * sinΘ
@@ -82,11 +82,14 @@ void KalmanFilter::Prediction(const Eigen::Vector2d& input, const double delta_t
     //      delta_t,            delta_t,               1.0,                0.0,
     //      delta_t,            delta_t,               0.0,                1.0;
 
-    Q = 0.01 * 0.01 * Q;
+    // Q = 0.01 * 0.01 * Q;
+
+    // std::cout << "pf_inverse: " << pf_inverse << std::endl;
+
+    Q = pf_inverse * Q;
 
     // std::cout << "Q: " << std::endl << Q << std::endl;
 
-    // std::cout << "Q: " << std::endl << Q << std::endl;
 
     P_ = Jf * P_ * Jf.transpose() + Q;
 
@@ -133,8 +136,8 @@ void KalmanFilter::IMUEKFUpdate(const Eigen::Vector2d& z)
     // std::cout << "y: " << std::endl << y << std::endl;
 
     Eigen::Matrix2d R;
-    R << 0.01, 0.0,
-         0.0, 0.01;
+    R << 1000, 0.0,
+         0.0, 1000;
 
     Eigen::Matrix2d S = H * P_ * H.transpose() + R;
 
@@ -171,8 +174,8 @@ void KalmanFilter::GNSSEKFUpdate(const Eigen::Vector2d& z)
     // std::cout << "y: " << std::endl << y << std::endl;
 
     Eigen::Matrix2d R;
-    R << 1000.0, 0.0,
-         0.0, 1000.0;
+    R << 100.0, 0.0,
+         0.0, 100.0;
 
     Eigen::Matrix2d S = H * P_ * H.transpose() + R;
     Eigen::Matrix<double, 4, 2> K = P_ * H.transpose() * S.inverse();
